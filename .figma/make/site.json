@@ -1,0 +1,10 @@
+{
+  "description": "Connects artists, writers, and clients for commission services with personalized updates, creator reels, and social profile features in a vibrant platform.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
