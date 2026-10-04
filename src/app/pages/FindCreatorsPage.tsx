@@ -1,67 +1,102 @@
-import { useState, useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams, Link } from "react-router";
-import { Search, Filter, Star, Trophy, Medal, Award } from "lucide-react";
-import { allCreatorsData } from "../data/creatorsData";
+import { Search, Filter, Star, Trophy, Medal, Award, X, SearchX } from "lucide-react";
+import { useDb } from "../lib/db";
+import { PRICE_TIERS, type PriceTier, priceTierOf, startingPrice, formatVND } from "../lib/pricing";
+import { EmptyState } from "../components/common";
 
-// All available tags
-const allTags = [
-  "Dark Fantasy", "Pastel", "Gothic", "Kawaii", "Cyberpunk", "Steampunk",
-  "Horror", "Cute", "Romance", "Action", "Sci-Fi", "Mystery",
-  "Fantasy", "Realistic", "Anime", "Chibi", "Semi-Realistic", "Cartoon",
-  "Landscape", "Portrait", "Character Design", "Concept Art", "Digital Art", "Traditional",
-  "Full Color", "Sketch", "Lineart", "Watercolor", "Oil Painting", "Pixel Art", "Atmospheric"
-];
+const SORTS = [
+  { value: "rating", label: "Đánh giá cao nhất" },
+  { value: "popular", label: "Nhiều commission nhất" },
+  { value: "price_asc", label: "Giá thấp → cao" },
+  { value: "price_desc", label: "Giá cao → thấp" },
+  { value: "newest", label: "Mới tham gia" },
+] as const;
 
-const creatorsData = allCreatorsData;
+type SortValue = (typeof SORTS)[number]["value"];
 
 export function FindCreatorsPage() {
-  const [searchParams] = useSearchParams();
-  const [searchQuery, setSearchQuery] = useState("");
-  const [selectedType, setSelectedType] = useState<"all" | "Artist">("all");
-  const [showFilters, setShowFilters] = useState(false);
-  const [priceRange, setPriceRange] = useState<string>("all");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchQuery, setSearchQuery] = useState(searchParams.get("q") ?? "");
+  const [selectedType, setSelectedType] = useState<"all" | "Artist" | "Writer">("all");
+  const [selectedTags, setSelectedTags] = useState<string[]>(() => searchParams.getAll("tag"));
+  const [priceTier, setPriceTier] = useState<PriceTier>("all");
+  const [sort, setSort] = useState<SortValue>("rating");
+  const [openOnly, setOpenOnly] = useState(false);
+  const [showFilters, setShowFilters] = useState(selectedTags.length > 0);
   const [showTagSuggestions, setShowTagSuggestions] = useState(false);
-  const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchBoxRef = useRef<HTMLDivElement>(null);
+
+  const creators = useDb((db) => db.creators);
+
+  const allTags = useMemo(() => {
+    const counts = new Map<string, number>();
+    creators.forEach((c) => c.tags.forEach((t) => counts.set(t, (counts.get(t) ?? 0) + 1)));
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([t]) => t);
+  }, [creators]);
 
   useEffect(() => {
     const typeParam = searchParams.get("type");
-    if (typeParam === "Artist") {
-      setSelectedType(typeParam);
+    if (typeParam === "Artist" || typeParam === "Writer") setSelectedType(typeParam);
+    const tags = searchParams.getAll("tag");
+    if (tags.length) {
+      setSelectedTags(tags);
+      setShowFilters(true);
     }
   }, [searchParams]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (searchInputRef.current && !searchInputRef.current.contains(event.target as Node)) {
-        setShowTagSuggestions(false);
-      }
+      if (searchBoxRef.current && !searchBoxRef.current.contains(event.target as Node)) setShowTagSuggestions(false);
     };
-
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  const handleTagClick = (tag: string) => {
-    setSearchQuery(tag);
-    setShowTagSuggestions(false);
+  const toggleTag = (tag: string) => {
+    const next = selectedTags.includes(tag) ? selectedTags.filter((t) => t !== tag) : [...selectedTags, tag];
+    setSelectedTags(next);
+    const params = new URLSearchParams(searchParams);
+    params.delete("tag");
+    next.forEach((t) => params.append("tag", t));
+    setSearchParams(params, { replace: true });
   };
 
-  const filteredCreators = creatorsData.filter((creator) => {
-    const matchesSearch =
-      creator.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      creator.specialty.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      creator.tags.some((tag) => tag.toLowerCase().includes(searchQuery.toLowerCase()));
+  const clearFilters = () => {
+    setSearchQuery("");
+    setSelectedTags([]);
+    setPriceTier("all");
+    setSelectedType("all");
+    setOpenOnly(false);
+    setSearchParams({}, { replace: true });
+  };
 
-    const matchesType = selectedType === "all" || creator.type === selectedType;
+  const filteredCreators = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    const list = creators.filter((creator) => {
+      const matchesSearch =
+        !q ||
+        creator.name.toLowerCase().includes(q) ||
+        creator.specialty.toLowerCase().includes(q) ||
+        creator.tags.some((tag) => tag.toLowerCase().includes(q));
+      const matchesType = selectedType === "all" || creator.type === selectedType;
+      const matchesTags = selectedTags.every((t) => creator.tags.includes(t));
+      const matchesPrice = priceTier === "all" || priceTierOf(creator.priceList) === priceTier;
+      return matchesSearch && matchesType && matchesTags && matchesPrice && (!openOnly || creator.isOpen);
+    });
+    const sorters: Record<SortValue, (a: (typeof list)[number], b: (typeof list)[number]) => number> = {
+      rating: (a, b) => b.rating - a.rating || b.ratingCount - a.ratingCount,
+      popular: (a, b) => b.commissions - a.commissions,
+      price_asc: (a, b) => startingPrice(a.priceList) - startingPrice(b.priceList),
+      price_desc: (a, b) => startingPrice(b.priceList) - startingPrice(a.priceList),
+      newest: (a, b) => b.createdAt - a.createdAt,
+    };
+    return [...list].sort(sorters[sort]);
+  }, [creators, searchQuery, selectedType, selectedTags, priceTier, openOnly, sort]);
 
-    return matchesSearch && matchesType;
-  });
+  const topCreators = useMemo(() => [...creators].sort((a, b) => b.rating - a.rating || b.commissions - a.commissions).slice(0, 3), [creators]);
 
-  // Get top creators by type and rating
-  const topArtists = creatorsData
-    .filter((c) => c.type === "Artist")
-    .sort((a, b) => b.rating - a.rating)
-    .slice(0, 3);
+  const activeFilterCount = selectedTags.length + (priceTier !== "all" ? 1 : 0) + (openOnly ? 1 : 0);
 
   const getRankIcon = (index: number) => {
     switch (index) {
@@ -78,18 +113,13 @@ export function FindCreatorsPage() {
 
   return (
     <div className="container max-w-7xl mx-auto px-4 py-8">
-      {/* Header */}
       <div className="mb-6">
         <h1 className="mb-2">Tìm Creators</h1>
-        <p className="text-muted-foreground">
-          Khám phá và kết nối với hàng ngàn artists tài năng
-        </p>
+        <p className="text-muted-foreground">Khám phá và kết nối với các artists & writers tài năng</p>
       </div>
 
-      {/* Search and Filters - Moved to top */}
       <div className="space-y-4 mb-8">
-        {/* Search Bar */}
-        <div className="relative" ref={searchInputRef}>
+        <div className="relative" ref={searchBoxRef}>
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground z-10" />
           <input
             type="text"
@@ -97,20 +127,29 @@ export function FindCreatorsPage() {
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             onFocus={() => setShowTagSuggestions(true)}
-            className="w-full pl-12 pr-4 py-4 bg-card rounded-xl border border-border focus:outline-none focus:ring-2 focus:ring-ring"
+            className="w-full pl-12 pr-10 py-4 bg-card rounded-xl border border-border focus:outline-none focus:ring-2 focus:ring-ring"
           />
+          {searchQuery && (
+            <button onClick={() => setSearchQuery("")} aria-label="Xóa tìm kiếm" className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-muted-foreground hover:text-foreground">
+              <X className="w-4 h-4" />
+            </button>
+          )}
 
-          {/* Tag Suggestions Dropdown */}
           {showTagSuggestions && (
             <div className="absolute top-full left-0 right-0 mt-2 bg-card rounded-xl border border-border shadow-lg max-h-64 overflow-y-auto z-20">
               <div className="p-4">
-                <p className="text-sm text-muted-foreground mb-3">Tags phổ biến</p>
+                <p className="text-sm text-muted-foreground mb-3">Tags phổ biến — bấm để lọc</p>
                 <div className="flex flex-wrap gap-2">
                   {allTags.map((tag) => (
                     <button
                       key={tag}
-                      onClick={() => handleTagClick(tag)}
-                      className="px-3 py-1.5 bg-secondary hover:bg-primary hover:text-primary-foreground rounded-lg text-sm transition-colors"
+                      onClick={() => {
+                        toggleTag(tag);
+                        setShowTagSuggestions(false);
+                      }}
+                      className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${
+                        selectedTags.includes(tag) ? "bg-primary text-primary-foreground" : "bg-secondary hover:bg-primary hover:text-primary-foreground"
+                      }`}
                     >
                       {tag}
                     </button>
@@ -121,84 +160,106 @@ export function FindCreatorsPage() {
           )}
         </div>
 
-        {/* Type Filters */}
-        <div className="flex flex-wrap gap-3">
-          <button
-            onClick={() => setSelectedType("all")}
-            className={`px-6 py-2 rounded-lg transition-colors ${
-              selectedType === "all"
-                ? "bg-primary text-primary-foreground"
-                : "bg-secondary text-secondary-foreground hover:bg-secondary/80"
-            }`}
+        <div className="flex flex-wrap gap-2 sm:gap-3 items-center">
+          {(["all", "Artist", "Writer"] as const).map((t) => (
+            <button
+              key={t}
+              onClick={() => setSelectedType(t)}
+              className={`px-4 sm:px-6 py-2 rounded-lg transition-colors ${
+                selectedType === t ? "bg-primary text-primary-foreground" : "bg-secondary text-secondary-foreground hover:bg-secondary/80"
+              }`}
+            >
+              {t === "all" ? "Tất cả" : `${t}s`}
+            </button>
+          ))}
+          <select
+            value={sort}
+            onChange={(e) => setSort(e.target.value as SortValue)}
+            aria-label="Sắp xếp"
+            className="sm:ml-auto px-3 py-2 rounded-lg bg-card border border-border text-sm focus:outline-none focus:ring-2 focus:ring-ring"
           >
-            Tất cả
-          </button>
-          <button
-            onClick={() => setSelectedType("Artist")}
-            className={`px-6 py-2 rounded-lg transition-colors ${
-              selectedType === "Artist"
-                ? "bg-primary text-primary-foreground"
-                : "bg-secondary text-secondary-foreground hover:bg-secondary/80"
-            }`}
-          >
-            Artists
-          </button>
+            {SORTS.map((s) => (
+              <option key={s.value} value={s.value}>
+                {s.label}
+              </option>
+            ))}
+          </select>
           <button
             onClick={() => setShowFilters(!showFilters)}
-            className="ml-auto px-6 py-2 rounded-lg bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors flex items-center gap-2"
+            className="px-4 sm:px-6 py-2 rounded-lg bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors flex items-center gap-2"
           >
             <Filter className="w-4 h-4" />
             Bộ lọc nâng cao
+            {activeFilterCount > 0 && <span className="px-1.5 rounded-full bg-primary text-primary-foreground text-xs">{activeFilterCount}</span>}
           </button>
         </div>
 
-        {/* Advanced Filters */}
         {showFilters && (
-          <div className="p-6 bg-card rounded-xl border border-border space-y-4">
-            <div>
-              <label className="block mb-2">Mức giá</label>
-              <select
-                value={priceRange}
-                onChange={(e) => setPriceRange(e.target.value)}
-                className="w-full px-4 py-2 bg-input-background rounded-lg border border-border focus:outline-none focus:ring-2 focus:ring-ring"
-              >
-                <option value="all">Tất cả</option>
-                <option value="0-50">50.000 VND - 1.000.000 VND</option>
-                <option value="50-100">1.000.000 VND - 5.000.000 VND</option>
-                <option value="100+">from 5.000.000 VND</option>
-              </select>
+          <div className="p-6 bg-card rounded-xl border border-border space-y-5">
+            <div className="grid sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block mb-2">Mức giá khởi điểm</label>
+                <select
+                  value={priceTier}
+                  onChange={(e) => setPriceTier(e.target.value as PriceTier)}
+                  className="w-full px-4 py-2 bg-input-background rounded-lg border border-border focus:outline-none focus:ring-2 focus:ring-ring"
+                >
+                  {PRICE_TIERS.map((t) => (
+                    <option key={t.value} value={t.value}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <label className="flex items-center gap-2 cursor-pointer sm:mt-8">
+                <input type="checkbox" checked={openOnly} onChange={(e) => setOpenOnly(e.target.checked)} className="w-4 h-4 accent-primary" />
+                <span>Chỉ hiển thị creator đang mở nhận đơn</span>
+              </label>
             </div>
+            <div>
+              <label className="block mb-2">Tag phân loại (style vẽ, thể loại, độ phủ màu...)</label>
+              <div className="flex flex-wrap gap-2">
+                {allTags.map((tag) => (
+                  <button
+                    key={tag}
+                    onClick={() => toggleTag(tag)}
+                    className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${
+                      selectedTags.includes(tag) ? "bg-primary text-primary-foreground" : "bg-secondary text-secondary-foreground hover:bg-secondary/70"
+                    }`}
+                  >
+                    {tag}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {activeFilterCount > 0 && (
+              <button onClick={clearFilters} className="text-sm text-primary hover:underline">
+                Xóa tất cả bộ lọc
+              </button>
+            )}
           </div>
         )}
       </div>
 
-      {/* Top Rankings */}
       <div className="mb-12">
-        {/* Top Artists */}
         <div className="bg-gradient-to-br from-primary/5 to-purple-100/50 rounded-2xl border border-border p-6">
           <div className="flex items-center gap-3 mb-6">
             <Trophy className="w-6 h-6 text-primary" />
-            <h2>Top Artists tháng này</h2>
+            <h2>Monthly Favorite Creators</h2>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {topArtists.map((artist, index) => (
+            {topCreators.map((artist, index) => (
               <Link key={artist.id} to={`/creator/${artist.id}`}>
                 <div className="flex items-center gap-4 bg-card rounded-xl p-4 hover:shadow-md transition-shadow cursor-pointer">
-                  <div className="flex-shrink-0">
-                    {getRankIcon(index)}
-                  </div>
-                  <img
-                    src={artist.image}
-                    alt={artist.name}
-                    className="w-16 h-16 rounded-lg object-cover"
-                  />
+                  <div className="flex-shrink-0">{getRankIcon(index)}</div>
+                  <img src={artist.image} alt={artist.name} className="w-16 h-16 rounded-lg object-cover" />
                   <div className="flex-1 min-w-0">
                     <h4 className="truncate">{artist.name}</h4>
                     <p className="text-sm text-muted-foreground truncate">{artist.specialty}</p>
                   </div>
                   <div className="flex items-center gap-1 flex-shrink-0">
                     <Star className="w-4 h-4 fill-yellow-400 text-yellow-400" />
-                    <span className="font-semibold">{artist.rating}</span>
+                    <span className="font-semibold">{artist.rating.toFixed(1)}</span>
                   </div>
                 </div>
               </Link>
@@ -207,79 +268,61 @@ export function FindCreatorsPage() {
         </div>
       </div>
 
-      {/* Divider */}
-      <div className="mb-8">
-        <h2 className="mb-6">Tất cả Creators</h2>
-      </div>
-
-      {/* Results Count */}
-      <div className="mb-6">
-        <p className="text-muted-foreground">
+      <div className="mb-6 flex items-end justify-between gap-4">
+        <h2>Tất cả Creators</h2>
+        <p className="text-muted-foreground text-sm">
           Tìm thấy <span className="font-semibold text-foreground">{filteredCreators.length}</span> creators
         </p>
       </div>
 
-      {/* Creators Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {filteredCreators.map((creator) => (
-          <Link key={creator.id} to={`/creator/${creator.id}`}>
-            <div className="bg-card rounded-xl border border-border overflow-hidden hover:shadow-lg transition-shadow cursor-pointer group">
-            {/* Image */}
-            <div className="relative h-48 overflow-hidden">
-              <img
-                src={creator.image}
-                alt={creator.name}
-                className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300"
-              />
-              <div className="absolute top-3 right-3 px-3 py-1 bg-primary text-primary-foreground rounded-full text-sm">
-                {creator.type}
-              </div>
-            </div>
-
-            {/* Content */}
-            <div className="p-5 space-y-3">
-              <div>
-                <h3 className="mb-1">{creator.name}</h3>
-                <p className="text-sm text-muted-foreground">{creator.specialty}</p>
-              </div>
-
-              {/* Stats */}
-              <div className="flex items-center gap-4 text-sm">
-                <div className="flex items-center gap-1">
-                  <Star className="w-4 h-4 fill-yellow-400 text-yellow-400" />
-                  <span className="font-semibold">{creator.rating}</span>
+      {filteredCreators.length === 0 ? (
+        <EmptyState
+          icon={SearchX}
+          title="Không tìm thấy creator phù hợp"
+          description="Thử bỏ bớt tag hoặc mở rộng mức giá."
+          action={<button onClick={clearFilters} className="px-5 py-2 bg-primary text-primary-foreground rounded-lg">Xóa bộ lọc</button>}
+        />
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+          {filteredCreators.map((creator) => (
+            <Link key={creator.id} to={`/creator/${creator.id}`} className="block">
+              <div className="h-full bg-card rounded-xl border border-border overflow-hidden hover:shadow-lg transition-shadow cursor-pointer group flex flex-col">
+                <div className="relative h-48 overflow-hidden">
+                  <img src={creator.image} alt={creator.name} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300" />
+                  <div className="absolute top-3 right-3 px-3 py-1 bg-primary text-primary-foreground rounded-full text-sm">{creator.type}</div>
+                  {!creator.isOpen && <div className="absolute top-3 left-3 px-3 py-1 bg-black/70 text-white rounded-full text-xs">Tạm đóng đơn</div>}
                 </div>
-                <div className="text-muted-foreground">
-                  {creator.commissions} commissions
+                <div className="p-5 space-y-3 flex-1 flex flex-col">
+                  <div>
+                    <h3 className="mb-1">{creator.name}</h3>
+                    <p className="text-sm text-muted-foreground">{creator.specialty}</p>
+                  </div>
+                  <div className="flex items-center gap-4 text-sm">
+                    <div className="flex items-center gap-1">
+                      <Star className="w-4 h-4 fill-yellow-400 text-yellow-400" />
+                      <span className="font-semibold">{creator.ratingCount > 0 ? creator.rating.toFixed(1) : "Mới"}</span>
+                    </div>
+                    <div className="text-muted-foreground">{creator.commissions} commissions</div>
+                  </div>
+                  <div className="text-primary text-sm">
+                    Từ <span className="font-semibold">{formatVND(startingPrice(creator.priceList))}</span>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {creator.tags.map((tag) => (
+                      <span key={tag} className={`px-2 py-1 rounded text-xs ${selectedTags.includes(tag) ? "bg-primary/15 text-primary" : "bg-secondary text-secondary-foreground"}`}>
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                  <div className="mt-auto pt-2">
+                    <span className="block w-full py-2 text-center bg-primary text-primary-foreground rounded-lg group-hover:bg-primary/90 transition-colors">Xem hồ sơ</span>
+                  </div>
                 </div>
               </div>
-
-              {/* Price */}
-              <div className="text-primary">
-                <span className="font-semibold text-sm">{creator.priceRange}</span>
-              </div>
-
-              {/* Tags */}
-              <div className="flex flex-wrap gap-2">
-                {creator.tags.map((tag) => (
-                  <span
-                    key={tag}
-                    className="px-2 py-1 bg-secondary text-secondary-foreground rounded text-xs"
-                  >
-                    {tag}
-                  </span>
-                ))}
-              </div>
-
-              {/* Action Button */}
-              <button className="w-full py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors">
-                Xem hồ sơ
-              </button>
-            </div>
-            </div>
-          </Link>
-        ))}
-      </div>
+            </Link>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
