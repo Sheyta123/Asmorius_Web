@@ -1,195 +1,126 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router";
-import { User, Mail, Lock, Eye, EyeOff } from "lucide-react";
+import { Link, Navigate, useNavigate, useSearchParams } from "react-router";
+import { User, Mail, Lock, Phone } from "lucide-react";
+import { AuthShell, IconInput, PasswordStrength } from "../components/AuthShell";
+import { Spinner } from "../components/common";
+import { useAuth } from "../context/AuthContext";
+import { register, validatePassword } from "../lib/api/auth";
+
+type Field = "fullName" | "email" | "phone" | "password" | "confirmPassword";
 
 export function RegisterPage() {
   const navigate = useNavigate();
-  const [showPassword, setShowPassword] = useState(false);
-  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
-  const [formData, setFormData] = useState({
+  const [params] = useSearchParams();
+  const { user } = useAuth();
+  const redirect = params.get("redirect") ?? "/";
+  const [formData, setFormData] = useState<Record<Field, string>>({
     fullName: "",
     email: "",
+    phone: "",
     password: "",
     confirmPassword: "",
   });
-  const [errors, setErrors] = useState({
-    confirmPassword: "",
-  });
+  const [agreed, setAgreed] = useState(false);
+  const [errors, setErrors] = useState<Partial<Record<Field | "form", string>>>({});
+  const [loading, setLoading] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+  if (user) return <Navigate to="/" replace />;
 
-    // Validate password confirmation
-    if (formData.password !== formData.confirmPassword) {
-      setErrors({ confirmPassword: "Mật khẩu xác nhận không khớp" });
-      return;
-    }
-
-    // TODO: Implement registration logic
-    navigate("/");
+  const set = (field: Field, value: string) => {
+    setFormData((f) => ({ ...f, [field]: value }));
+    setErrors((e) => ({ ...e, [field]: undefined, form: undefined }));
   };
 
-  const handleConfirmPasswordChange = (value: string) => {
-    setFormData({ ...formData, confirmPassword: value });
-    if (formData.password && value !== formData.password) {
-      setErrors({ confirmPassword: "Mật khẩu xác nhận không khớp" });
-    } else {
-      setErrors({ confirmPassword: "" });
+  const validate = () => {
+    const next: typeof errors = {};
+    if (formData.fullName.trim().length < 2) next.fullName = "Vui lòng nhập họ tên";
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(formData.email.trim())) next.email = "Email không hợp lệ";
+    if (formData.phone && !/^(0|\+84)\d{9,10}$/.test(formData.phone.replace(/\s/g, ""))) next.phone = "Số điện thoại không hợp lệ";
+    const pw = validatePassword(formData.password);
+    if (pw) next.password = pw;
+    if (formData.password !== formData.confirmPassword) next.confirmPassword = "Mật khẩu xác nhận không khớp";
+    if (!agreed) next.form = "Bạn cần đồng ý với Điều khoản sử dụng";
+    setErrors(next);
+    return Object.keys(next).length === 0;
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!validate()) return;
+    setLoading(true);
+    try {
+      const { email, code } = await register({
+        fullName: formData.fullName,
+        email: formData.email,
+        phone: formData.phone.replace(/\s/g, ""),
+        password: formData.password,
+      });
+      navigate(`/verify-email?email=${encodeURIComponent(email)}&redirect=${encodeURIComponent(redirect)}`, { state: { code } });
+    } catch (err) {
+      setErrors({ form: (err as Error).message });
+    } finally {
+      setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-primary/5 via-purple-50 to-pink-50 flex items-center justify-center p-4">
-      <div className="w-full max-w-md">
-        {/* Logo */}
-        <Link to="/" className="flex items-center justify-center gap-2 mb-8">
-          <div className="w-12 h-12 rounded-full bg-gradient-to-br from-primary to-purple-600 flex items-center justify-center">
-            <span className="font-bold text-white text-2xl">A</span>
-          </div>
-          <span className="font-bold text-3xl bg-gradient-to-r from-primary to-purple-600 bg-clip-text text-transparent">
-            Asmorius
-          </span>
-        </Link>
-
-        {/* Register Form */}
-        <div className="bg-card rounded-2xl shadow-xl border border-border p-8 space-y-6">
-          <div className="text-center space-y-2">
-            <h1>Đăng ký tài khoản</h1>
-            <p className="text-muted-foreground">
-              Tham gia cộng đồng Asmorius ngay hôm nay
-            </p>
-          </div>
-
-          <form onSubmit={handleSubmit} className="space-y-4">
-            {/* Full Name */}
-            <div className="space-y-2">
-              <label htmlFor="fullName">Họ và tên</label>
-              <div className="relative">
-                <User className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
-                <input
-                  id="fullName"
-                  type="text"
-                  placeholder="Nguyễn Văn A"
-                  value={formData.fullName}
-                  onChange={(e) => setFormData({ ...formData, fullName: e.target.value })}
-                  className="w-full pl-10 pr-4 py-3 bg-input-background rounded-lg border border-border focus:outline-none focus:ring-2 focus:ring-ring"
-                  required
-                />
-              </div>
-            </div>
-
-            {/* Email */}
-            <div className="space-y-2">
-              <label htmlFor="email">Email</label>
-              <div className="relative">
-                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
-                <input
-                  id="email"
-                  type="email"
-                  placeholder="email@example.com"
-                  value={formData.email}
-                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                  className="w-full pl-10 pr-4 py-3 bg-input-background rounded-lg border border-border focus:outline-none focus:ring-2 focus:ring-ring"
-                  required
-                />
-              </div>
-            </div>
-
-            {/* Password */}
-            <div className="space-y-2">
-              <label htmlFor="password">Mật khẩu</label>
-              <div className="relative">
-                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
-                <input
-                  id="password"
-                  type={showPassword ? "text" : "password"}
-                  placeholder="Tối thiểu 8 ký tự"
-                  value={formData.password}
-                  onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                  className="w-full pl-10 pr-12 py-3 bg-input-background rounded-lg border border-border focus:outline-none focus:ring-2 focus:ring-ring"
-                  minLength={8}
-                  required
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                >
-                  {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
-                </button>
-              </div>
-            </div>
-
-            {/* Confirm Password */}
-            <div className="space-y-2">
-              <label htmlFor="confirmPassword">Xác nhận mật khẩu</label>
-              <div className="relative">
-                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
-                <input
-                  id="confirmPassword"
-                  type={showConfirmPassword ? "text" : "password"}
-                  placeholder="Nhập lại mật khẩu"
-                  value={formData.confirmPassword}
-                  onChange={(e) => handleConfirmPasswordChange(e.target.value)}
-                  className={`w-full pl-10 pr-12 py-3 bg-input-background rounded-lg border focus:outline-none focus:ring-2 focus:ring-ring ${
-                    errors.confirmPassword ? "border-destructive" : "border-border"
-                  }`}
-                  required
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                >
-                  {showConfirmPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
-                </button>
-              </div>
-              {errors.confirmPassword && (
-                <p className="text-sm text-destructive">{errors.confirmPassword}</p>
-              )}
-            </div>
-
-            {/* Info Note */}
-            <div className="p-4 bg-secondary rounded-lg border border-border">
-              <p className="text-sm text-muted-foreground">
-                Tài khoản của bạn có thể vừa là creator (artist) vừa là khách hàng.
-                Bạn có thể cập nhật hồ sơ creator sau khi đăng ký.
-              </p>
-            </div>
-
-            {/* Terms */}
-            <label className="flex items-start gap-2 cursor-pointer">
-              <input type="checkbox" className="w-4 h-4 mt-1 rounded border-border" required />
-              <span className="text-sm text-muted-foreground">
-                Tôi đồng ý với{" "}
-                <Link to="#" className="text-primary hover:underline">
-                  Điều khoản sử dụng
-                </Link>{" "}
-                và{" "}
-                <Link to="#" className="text-primary hover:underline">
-                  Chính sách bảo mật
-                </Link>
-              </span>
-            </label>
-
-            {/* Submit Button */}
-            <button
-              type="submit"
-              className="w-full py-3 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors"
-            >
-              Đăng ký
-            </button>
-          </form>
-
-          {/* Sign In Link */}
-          <div className="text-center">
-            <span className="text-muted-foreground">Đã có tài khoản? </span>
-            <Link to="/login" className="text-primary hover:underline">
-              Đăng nhập ngay
-            </Link>
-          </div>
+    <AuthShell title="Đăng ký tài khoản" subtitle="Tham gia cộng đồng Asmorius ngay hôm nay">
+      <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+        <div className="space-y-2">
+          <label htmlFor="fullName">Họ và tên</label>
+          <IconInput icon={User} id="fullName" autoComplete="name" placeholder="Nguyễn Văn A" value={formData.fullName} onChange={(e) => set("fullName", e.target.value)} error={errors.fullName} />
         </div>
+
+        <div className="space-y-2">
+          <label htmlFor="email">Email</label>
+          <IconInput icon={Mail} id="email" type="email" autoComplete="email" placeholder="email@example.com" value={formData.email} onChange={(e) => set("email", e.target.value)} error={errors.email} />
+        </div>
+
+        <div className="space-y-2">
+          <label htmlFor="phone">
+            Số điện thoại <span className="text-muted-foreground text-sm font-normal">(không bắt buộc)</span>
+          </label>
+          <IconInput icon={Phone} id="phone" type="tel" autoComplete="tel" placeholder="0901 234 567" value={formData.phone} onChange={(e) => set("phone", e.target.value)} error={errors.phone} />
+        </div>
+
+        <div className="space-y-2">
+          <label htmlFor="password">Mật khẩu</label>
+          <IconInput icon={Lock} id="password" type="password" autoComplete="new-password" placeholder="Tối thiểu 8 ký tự, gồm chữ và số" value={formData.password} onChange={(e) => set("password", e.target.value)} error={errors.password} />
+          <PasswordStrength password={formData.password} />
+        </div>
+
+        <div className="space-y-2">
+          <label htmlFor="confirmPassword">Xác nhận mật khẩu</label>
+          <IconInput icon={Lock} id="confirmPassword" type="password" autoComplete="new-password" placeholder="Nhập lại mật khẩu" value={formData.confirmPassword} onChange={(e) => set("confirmPassword", e.target.value)} error={errors.confirmPassword} />
+        </div>
+
+        <div className="p-4 bg-secondary rounded-lg border border-border">
+          <p className="text-sm text-muted-foreground">
+            Tài khoản của bạn có thể vừa là khách hàng vừa là creator. Bạn có thể nộp hồ sơ creator sau khi đăng ký.
+          </p>
+        </div>
+
+        <label className="flex items-start gap-2 cursor-pointer">
+          <input type="checkbox" checked={agreed} onChange={(e) => { setAgreed(e.target.checked); setErrors((x) => ({ ...x, form: undefined })); }} className="w-4 h-4 mt-1 rounded border-border accent-primary" />
+          <span className="text-sm text-muted-foreground">
+            Tôi đồng ý với <span className="text-primary">Điều khoản sử dụng</span> và <span className="text-primary">Chính sách bảo mật</span> của Asmorius
+          </span>
+        </label>
+
+        {errors.form && <p className="text-sm text-destructive bg-destructive/10 border border-destructive/30 rounded-lg px-3 py-2">{errors.form}</p>}
+
+        <button type="submit" disabled={loading} className="w-full py-3 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50 flex items-center justify-center gap-2">
+          {loading && <Spinner className="w-4 h-4" />}
+          Đăng ký
+        </button>
+      </form>
+
+      <div className="text-center">
+        <span className="text-muted-foreground">Đã có tài khoản? </span>
+        <Link to="/login" className="text-primary hover:underline">
+          Đăng nhập ngay
+        </Link>
       </div>
-    </div>
+    </AuthShell>
   );
 }
